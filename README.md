@@ -8,18 +8,6 @@ Kaggle-first, notebook-only pipeline for Animals-10:
 Execution entrypoint:
 - start_implementation.ipynb
 
-## Project Structure
-
-- start_implementation.ipynb
-- data/animals10.py
-- models/unet.py
-- training/mae_trainer.py
-- training/unet.py
-- training/classification.py
-- training/evaluation.py
-- utils/common.py
-- utils/visualization.py
-
 ## File Responsibilities
 
 | File | Role | Edit Frequency |
@@ -31,8 +19,7 @@ Execution entrypoint:
 | training/unet.py | Patch masking + U-Net train/eval loop | Low |
 | training/classification.py | MAE->classifier weight transfer + classifier train/eval | Low |
 | training/evaluation.py | MAE vs U-Net comparison metrics + classifier metric wrapper | Low |
-| utils/common.py | Shared seed/device/mixed-precision/checkpoint/json helpers | Low |
-| utils/visualization.py | Save qualitative comparison PNG (original/masked/MAE/U-Net) | Low |
+| utils/common.py | Shared seed/device/mixed-precision/checkpoint/json + visualization helpers | Low |
 
 ## Call Graph
 
@@ -49,7 +36,7 @@ flowchart TD
     E --> U
     E --> M
     E --> C
-    E --> V[utils/visualization.py]
+    E --> G
 
     M --> G
     U --> G
@@ -67,22 +54,32 @@ Compress-Archive -Path start_implementation.ipynb,data,models,training,utils,pyp
 ## Kaggle Run Steps
 
 1. Create a new Kaggle Notebook.
-2. Add dataset animals10 so images are at /kaggle/input/animals10/raw-img.
+2. Add dataset `alessiocorrado99/animals10` so images are at:
+    `/kaggle/input/datasets/alessiocorrado99/animals10/raw-img`
 3. Add your code zip as a Kaggle Dataset.
-4. Unzip in first cell:
-
-```python
-!unzip -q /kaggle/input/<your-code-dataset>/kaggle_code_bundle.zip -d /kaggle/working/project
-%cd /kaggle/working/project
-```
-
+4. In notebook Section 0, set:
+    - `USE_ZIPPED_PROJECT_CODE = True` (if you uploaded a zip dataset)
+    - `CODE_ZIP_PATH` to your actual zip path
 5. Install dependencies if needed:
-
 ```python
 !pip install -q torch torchvision transformers matplotlib
 ```
+6. Run notebook from Section 0 to the end.
 
-6. Open and run start_implementation.ipynb from top to bottom.
+## Classifier Training Mode Switch
+
+You can choose how classification fine-tuning works from Cell 1 in notebook:
+
+- `CLS_TRAIN_MODE = "end_to_end"`:
+    train all classifier parameters.
+- `CLS_TRAIN_MODE = "partial"`:
+    freeze almost everything and train only:
+    - classifier head
+    - last `UNFREEZE_LAST_BLOCKS` ViT blocks
+    - optional final ViT layer norm (`UNFREEZE_VIT_LAYERNORM`)
+
+This mode is applied in notebook Cell 6 and optimizer in Cell 7 automatically
+uses only trainable parameters.
 
 ## Outputs On Kaggle
 

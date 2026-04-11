@@ -120,6 +120,55 @@ def evaluate_classifier_epoch(
     return loss_meter.avg, accuracy
 
 
+def set_classifier_train_mode(
+    model: nn.Module,
+    mode: str = "end_to_end",
+    *,
+    unfreeze_last_blocks: int = 1,
+    unfreeze_vit_layernorm: bool = True,
+) -> int:
+    """Configure trainable parameters for classifier fine-tuning strategy.
+
+    Modes:
+    - end_to_end: train every parameter.
+    - partial: freeze all, then unfreeze classifier head, last ViT blocks,
+      and optionally final ViT layer norm.
+    """
+
+    normalized_mode = mode.lower().strip()
+    if normalized_mode not in {"end_to_end", "partial"}:
+        raise ValueError("mode must be one of: end_to_end, partial")
+
+    if normalized_mode == "end_to_end":
+        for param in model.parameters():
+            param.requires_grad = True
+    else:
+        for param in model.parameters():
+            param.requires_grad = False
+
+        # Unfreeze classification head.
+        if hasattr(model, "classifier"):
+            for param in model.classifier.parameters():
+                param.requires_grad = True
+
+        # Unfreeze last N transformer blocks when available.
+        if hasattr(model, "vit") and hasattr(model.vit, "encoder") and hasattr(model.vit.encoder, "layer"):
+            total_blocks = len(model.vit.encoder.layer)
+            n = max(0, min(unfreeze_last_blocks, total_blocks))
+            if n > 0:
+                for block in model.vit.encoder.layer[-n:]:
+                    for param in block.parameters():
+                        param.requires_grad = True
+
+        # Optionally unfreeze final layer norm.
+        if unfreeze_vit_layernorm and hasattr(model, "vit") and hasattr(model.vit, "layernorm"):
+            for param in model.vit.layernorm.parameters():
+                param.requires_grad = True
+
+    trainable_params = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    return trainable_params
+
+
 class ViTClassifierTrainer:
     """Object-oriented trainer for MAE-encoder-based image classification."""
 

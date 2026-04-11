@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from training.classification import evaluate_classifier_epoch
 from training.mae_trainer import reconstruct_mae_images
 from training.unet import apply_patch_mask
-from utils.visualization import save_comparison_figure
+from utils.common import save_comparison_figure
 
 
 """Evaluation utilities that compare reconstruction quality and classification metrics."""
