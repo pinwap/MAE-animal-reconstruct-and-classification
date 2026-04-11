@@ -11,10 +11,10 @@ import numpy as np
 import torch
 
 
-"""Shared training/runtime helpers used by every task module.
+"""Shared runtime and training utilities.
 
-Centralizing these utilities keeps behavior consistent across MAE, U-Net,
-and classification training stages.
+This module stays under utils because it is used by both training code and
+notebook orchestration code.
 """
 
 

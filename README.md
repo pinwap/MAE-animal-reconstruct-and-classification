@@ -1,112 +1,105 @@
 # MAE-animal-reconstruct-and-classification
 
-Kaggle-first implementation for Animal Image Reconstruction and Classification using a Masked Autoencoder.
+Kaggle-first, notebook-only pipeline for Animals-10:
+- MAE reconstruction pretraining
+- U-Net reconstruction baseline
+- MAE-encoder classification fine-tuning
 
-This project supports two execution styles:
-- Notebook-first on Kaggle: [start_implementation.ipynb](start_implementation.ipynb)
-- Script/CLI on Kaggle or local: [main.py](main.py)
+Execution entrypoint:
+- start_implementation.ipynb
 
-## Start Here
+## Project Structure
 
-- Open [start_implementation.ipynb](start_implementation.ipynb) for the main Kaggle workflow.
-- Use `/kaggle/input/animals10/raw-img` as the default dataset root.
-- Keep frequently edited training logic in the notebook and reusable code in the `data/`, `models/`, `training/`, and `utils/` modules.
+- start_implementation.ipynb
+- data/animals10.py
+- models/unet.py
+- training/mae_trainer.py
+- training/unet.py
+- training/classification.py
+- training/evaluation.py
+- utils/common.py
+- utils/visualization.py
 
-## Core Modules
+## File Responsibilities
 
-- [mae_core.py](mae_core.py) for MAE loading and reconstruction helpers.
-- [data/animals10.py](data/animals10.py) for dataset loading and splits.
-- [models/unet.py](models/unet.py) for the U-Net baseline.
-- [training/](training) for training loops, evaluation, and checkpoint helpers.
+| File | Role | Edit Frequency |
+|---|---|---|
+| start_implementation.ipynb | Main orchestrator on Kaggle, config, step-by-step training/eval flow | High |
+| data/animals10.py | Data discovery, split, transforms, dataloaders | Low |
+| models/unet.py | U-Net architecture definition | Low |
+| training/mae_trainer.py | MAE load/process/reconstruct + MAE train/eval loop | Low |
+| training/unet.py | Patch masking + U-Net train/eval loop | Low |
+| training/classification.py | MAE->classifier weight transfer + classifier train/eval | Low |
+| training/evaluation.py | MAE vs U-Net comparison metrics + classifier metric wrapper | Low |
+| utils/common.py | Shared seed/device/mixed-precision/checkpoint/json helpers | Low |
+| utils/visualization.py | Save qualitative comparison PNG (original/masked/MAE/U-Net) | Low |
 
-## What To Zip For Kaggle
+## Call Graph
 
-When you upload your own code as a Kaggle Dataset, zip only project code (not environment and git metadata):
+```mermaid
+flowchart TD
+    N[start_implementation.ipynb] --> D[data/animals10.py]
+    N --> M[training/mae_trainer.py]
+    N --> U[training/unet.py]
+    N --> C[training/classification.py]
+    N --> E[training/evaluation.py]
+    N --> G[utils/common.py]
 
-- Include:
-	- [main.py](main.py)
-	- [mae_core.py](mae_core.py)
-	- [start_implementation.ipynb](start_implementation.ipynb)
-	- [data/](data)
-	- [models/](models)
-	- [training/](training)
-	- [utils/](utils)
-	- [pyproject.toml](pyproject.toml)
-	- [README.md](README.md)
-- Exclude:
-	- `.venv/`
-	- `.git/`
-	- `__pycache__/`
-	- large outputs/checkpoints you do not want to version
+    U --> UM[models/unet.py]
+    E --> U
+    E --> M
+    E --> C
+    E --> V[utils/visualization.py]
 
-PowerShell example (run in project root):
-
-```powershell
-Compress-Archive -Path main.py,mae_core.py,start_implementation.ipynb,data,models,training,utils,pyproject.toml,README.md -DestinationPath kaggle_code_bundle.zip -Force
+    M --> G
+    U --> G
+    C --> G
 ```
 
-## Kaggle Run Steps (Recommended)
+## Kaggle Packaging
+
+Zip only code files (do not include .venv/.git/cache/output):
+
+```powershell
+Compress-Archive -Path start_implementation.ipynb,data,models,training,utils,pyproject.toml,README.md -DestinationPath kaggle_code_bundle.zip -Force
+```
+
+## Kaggle Run Steps
 
 1. Create a new Kaggle Notebook.
-2. Add dataset `animals10` (so images are at `/kaggle/input/animals10/raw-img`).
-3. Add your zipped code dataset (`kaggle_code_bundle.zip`) or upload files directly.
-4. In a first setup cell, unzip code to writable working directory:
+2. Add dataset animals10 so images are at /kaggle/input/animals10/raw-img.
+3. Add your code zip as a Kaggle Dataset.
+4. Unzip in first cell:
 
 ```python
 !unzip -q /kaggle/input/<your-code-dataset>/kaggle_code_bundle.zip -d /kaggle/working/project
 %cd /kaggle/working/project
 ```
 
-5. Install dependencies (if Kaggle image does not already include them):
+5. Install dependencies if needed:
 
 ```python
 !pip install -q torch torchvision transformers matplotlib
 ```
 
-6. Run notebook workflow in [start_implementation.ipynb](start_implementation.ipynb) or run CLI commands below.
+6. Open and run start_implementation.ipynb from top to bottom.
 
-## CLI Usage
+## Outputs On Kaggle
 
-Default dataset root is already Kaggle path (`/kaggle/input/animals10/raw-img`).
+- Checkpoints: /kaggle/working/checkpoints/...
+- Metrics JSON: /kaggle/working/results/...
+- Comparison image: /kaggle/working/results/comparison/sample_comparison.png
 
-Quick check:
+## About Editing .py Files
 
-```bash
-python main.py --step setup-check
-```
+Default workflow:
+- Usually you do not need to edit .py files every run.
+- You call functions/classes from notebook cells.
+- Tune hyperparameters and experiment flow in start_implementation.ipynb.
 
-Train MAE:
+When should you edit .py files:
+- New model architecture
+- New augmentation or split policy
+- New metric, checkpoint format, or visualization behavior
 
-```bash
-python main.py --step train-mae --epochs-mae 10 --batch-size 32 --checkpoint-every 2
-```
-
-Train U-Net baseline:
-
-```bash
-python main.py --step train-unet --epochs-unet 10 --batch-size 32 --checkpoint-every 2
-```
-
-Train classifier (with MAE initialization):
-
-```bash
-python main.py --step train-cls --epochs-cls 10 --mae-checkpoint /kaggle/working/checkpoints/mae/best.pt
-```
-
-Run final comparison + metrics + sample PNG:
-
-```bash
-python main.py --step eval-compare
-```
-
-Run all steps end-to-end:
-
-```bash
-python main.py --step all --epochs 5 --checkpoint-every 1
-```
-
-## Output Locations On Kaggle
-
-- Checkpoints: `/kaggle/working/checkpoints/...`
-- Metrics JSON: `/kaggle/working/results/...`
-- Comparison image: `/kaggle/working/results/comparison/sample.png`
+In short: yes, you can call these .py modules from ipynb directly as reusable functions/classes.

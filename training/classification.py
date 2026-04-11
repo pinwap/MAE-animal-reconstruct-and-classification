@@ -6,7 +6,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from training.common import AverageMeter, autocast_if_available, save_model_checkpoint
+from utils.common import AverageMeter, autocast_if_available, save_model_checkpoint
 
 
 """Classification stage helpers built on top of ViT/MAE encoder weights."""

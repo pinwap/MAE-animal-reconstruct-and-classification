@@ -6,7 +6,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from training.common import AverageMeter, autocast_if_available, save_model_checkpoint
+from utils.common import AverageMeter, autocast_if_available, save_model_checkpoint
 
 
 """U-Net baseline training helpers for masked image reconstruction."""
