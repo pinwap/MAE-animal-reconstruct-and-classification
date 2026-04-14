@@ -111,7 +111,7 @@ def create_grad_scaler(device: torch.device) -> torch.cuda.amp.GradScaler | None
     """Create GradScaler for CUDA training, return None for CPU."""
 
     if device.type == "cuda":
-        return torch.cuda.amp.GradScaler()
+        return torch.amp.GradScaler("cuda")
     return None
 
 
