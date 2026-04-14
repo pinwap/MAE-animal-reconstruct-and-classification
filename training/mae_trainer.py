@@ -73,6 +73,7 @@ def train_mae_epoch(
     device: torch.device,
     mask_ratio: float = 0.75,
     scaler: torch.cuda.amp.GradScaler | None = None,
+    scheduler: Any | None = None,
 ) -> float:
     """Run one MAE training epoch and return mean reconstruction loss."""
 
@@ -96,6 +97,9 @@ def train_mae_epoch(
         else:
             loss.backward()
             optimizer.step()
+
+        if scheduler is not None:
+            scheduler.step()
 
         meter.update(loss.item(), images.size(0))
 
@@ -159,7 +163,7 @@ class MAETrainer:
         self.mask_ratio = mask_ratio
         self.scaler = scaler
 
-    def train_epoch(self, loader) -> float:
+    def train_epoch(self, loader, scheduler: Any | None = None) -> float:
         return train_mae_epoch(
             model=self.model,
             loader=loader,
@@ -167,6 +171,7 @@ class MAETrainer:
             device=self.device,
             mask_ratio=self.mask_ratio,
             scaler=self.scaler,
+            scheduler=scheduler,
         )
 
     def evaluate_epoch(self, loader) -> float:

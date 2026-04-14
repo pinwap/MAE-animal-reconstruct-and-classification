@@ -60,6 +60,7 @@ def train_unet_epoch(
     device: torch.device,
     mask_ratio: float = 0.75,
     scaler: torch.cuda.amp.GradScaler | None = None,
+    scheduler: Any | None = None,
 ) -> float:
     """Run one U-Net training epoch on masked-to-original reconstruction."""
 
@@ -82,6 +83,9 @@ def train_unet_epoch(
         else:
             loss.backward()
             optimizer.step()
+
+        if scheduler is not None:
+            scheduler.step()
 
         meter.update(loss.item(), images.size(0))
 
@@ -130,7 +134,7 @@ class UNetReconstructionTrainer:
         self.mask_ratio = mask_ratio
         self.scaler = scaler
 
-    def train_epoch(self, loader) -> float:
+    def train_epoch(self, loader, scheduler: Any | None = None) -> float:
         return train_unet_epoch(
             model=self.model,
             loader=loader,
@@ -138,6 +142,7 @@ class UNetReconstructionTrainer:
             device=self.device,
             mask_ratio=self.mask_ratio,
             scaler=self.scaler,
+            scheduler=scheduler,
         )
 
     def evaluate_epoch(self, loader) -> float:

@@ -49,6 +49,7 @@ def train_classifier_epoch(
     device: torch.device,
     criterion: nn.Module | None = None,
     scaler: torch.cuda.amp.GradScaler | None = None,
+    scheduler: Any | None = None,
 ) -> tuple[float, float]:
     """Run one classifier training epoch and return (loss, accuracy)."""
 
@@ -76,6 +77,9 @@ def train_classifier_epoch(
         else:
             loss.backward()
             optimizer.step()
+
+        if scheduler is not None:
+            scheduler.step()
 
         predictions = logits.argmax(dim=1)
         correct += (predictions == labels).sum().item()
@@ -188,7 +192,7 @@ class ViTClassifierTrainer:
         self.scaler = scaler
         self.criterion = criterion or nn.CrossEntropyLoss()
 
-    def train_epoch(self, loader) -> tuple[float, float]:
+    def train_epoch(self, loader, scheduler: Any | None = None) -> tuple[float, float]:
         return train_classifier_epoch(
             model=self.model,
             loader=loader,
@@ -196,6 +200,7 @@ class ViTClassifierTrainer:
             device=self.device,
             criterion=self.criterion,
             scaler=self.scaler,
+            scheduler=scheduler,
         )
 
     def evaluate_epoch(self, loader) -> tuple[float, float]:
