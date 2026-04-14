@@ -37,7 +37,7 @@ def prepare_mae_input(image: Image.Image, processor: ViTImageProcessor) -> torch
     return inputs["pixel_values"]
 
 
-@torch.no_grad()
+@torch.no_grad() 
 def reconstruct_image(
     image: Image.Image,
     model: ViTMAEForPreTraining | None = None,
@@ -50,6 +50,7 @@ def reconstruct_image(
     pixel_values = prepare_mae_input(image, processor)
     outputs = model(pixel_values=pixel_values)
     reconstruction = outputs.logits
+    #ถ้าโมเดลมีฟังก์ชัน unpatchify ให้ลองเรียกใช้เพื่อแปลง reconstruction จาก patchified form กลับเป็นรูปภาพเต็มๆ แต่ถ้าเกิดข้อผิดพลาดขึ้นก็ให้ข้ามไปและคืนค่า reconstruction ในรูปแบบ patchified เดิม
     if hasattr(model, "unpatchify"):
         try:
             reconstruction = model.unpatchify(reconstruction)
@@ -81,7 +82,7 @@ def train_mae_epoch(
     meter = AverageMeter()
 
     for batch in loader:
-        images = batch[0].to(device, non_blocking=True)
+        images = batch[0].to(device, non_blocking=True) #ดึงรูปทีละ batch จาก dataloader แล้วส่งไปที่ device โดยใช้ non_blocking=True เพื่อให้การส่งข้อมูลเป็นแบบ asynchronous ซึ่งจะช่วยเพิ่มประสิทธิภาพในการฝึกโมเดลได้มากขึ้น
         optimizer.zero_grad(set_to_none=True)
 
         with autocast_if_available(device):

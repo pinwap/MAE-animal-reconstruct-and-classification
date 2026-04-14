@@ -9,7 +9,6 @@ from PIL import Image
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data import WeightedRandomSampler
-from torchvision import transforms as T
 
 
 """Animals-10 dataset utilities.
@@ -21,9 +20,21 @@ and builds normalized dataloaders shared by all training stages.
 # เนื่องจากเราจะ transfer learning จากโมเดลที่ถูกฝึกบน ImageNet เลยต้องตั้งค่าภาพให้เหมือนกับที่โมเดลถูกฝึกมา
 # ต้อง normalize x' = (x - mean)\std ให้ distribution ของภาพใกล้เคียง
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-DEFAULT_IMAGE_SIZE = 224  # ขนาด ภาพที่ใช้ฝึกโมเดล ViT-MAE คือ 224x224 patch size 16
 IMAGENET_MEAN = (0.485, 0.456, 0.406) 
 IMAGENET_STD = (0.229, 0.224, 0.225)
+ANIMALS10_IT_TO_EN = {
+    "cane": "dog",
+    "cavallo": "horse",
+    "elefante": "elephant",
+    "farfalla": "butterfly",
+    "gallina": "chicken",
+    "gatto": "cat",
+    "mucca": "cow",
+    "pecora": "sheep",
+    "ragno": "spider",
+    "scoiattolo": "squirrel",
+}
+ANIMALS10_EXPECTED_EN_CLASSES = set(ANIMALS10_IT_TO_EN.values())
 
 
 @dataclass(frozen=True)
@@ -104,30 +115,29 @@ def build_split(root: str | Path, val_fraction: float = 0.2, seed: int = 42) -> 
     return DatasetSplit(class_to_idx=class_to_idx, train_samples=train_samples, val_samples=val_samples)
 
 
-def build_transforms(image_size: int = DEFAULT_IMAGE_SIZE) -> tuple[T.Compose, T.Compose]:
-    """Build ImageNet-normalized transforms used for MAE and classifier."""
+def map_animals10_labels_to_english(
+    class_to_idx_it: dict[str, int],
+) -> tuple[dict[str, int], dict[int, str]]:
+    """Map Animals-10 folder names (Italian) to English labels with validation."""
 
-    train_transform = T.Compose( 
-        [
-            T.RandomResizedCrop(
-                image_size,
-                scale=(0.2, 1.0),
-                interpolation=T.InterpolationMode.BICUBIC,
-            ),
-            T.RandomHorizontalFlip(),
-            T.ToTensor(),
-            T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ]
-    )
-    val_transform = T.Compose(
-        [
-            T.Resize(256, interpolation=T.InterpolationMode.BICUBIC),
-            T.CenterCrop(image_size),
-            T.ToTensor(),
-            T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ]
-    )
-    return train_transform, val_transform
+    dataset_classes_it = set(class_to_idx_it.keys())
+    unknown_it = sorted(dataset_classes_it - set(ANIMALS10_IT_TO_EN.keys()))
+    missing_it = sorted(set(ANIMALS10_IT_TO_EN.keys()) - dataset_classes_it)
+    if unknown_it or missing_it:
+        raise ValueError(
+            f"Unexpected class folders. unknown={unknown_it}, missing={missing_it}. "
+            "Please check DATA_ROOT points to Animals-10 raw-img."
+        )
+
+    class_to_idx_en = {
+        ANIMALS10_IT_TO_EN[class_name]: class_index
+        for class_name, class_index in class_to_idx_it.items()
+    }
+    if set(class_to_idx_en.keys()) != ANIMALS10_EXPECTED_EN_CLASSES:
+        raise ValueError("English class mapping is incomplete or incorrect.")
+
+    idx_to_class_en = {index: english for english, index in class_to_idx_en.items()}
+    return class_to_idx_en, idx_to_class_en
 
 
 def _build_weighted_sampler(train_samples: list[tuple[Path, int]]) -> WeightedRandomSampler:
@@ -181,7 +191,6 @@ class Animals10Dataset(Dataset):
 def build_dataloaders(
     root: str | Path,
     batch_size: int = 32,
-    image_size: int = DEFAULT_IMAGE_SIZE,
     val_fraction: float = 0.2,
     seed: int = 42,
     num_workers: int = 0, # ถ้า num_workers > 0 จะใช้ subprocess ในการโหลดข้อมูล เปิด Multi-processing ให้ CPU หลายๆ แกนช่วยกันไปอ่านรูปจากดิสก์มารอไว้ ซึ่งจะช่วยเพิ่มความเร็วในการโหลดข้อมูล 
@@ -194,12 +203,10 @@ def build_dataloaders(
 ) -> tuple[DataLoader, DataLoader, DatasetSplit]:
     """Create train/validation dataloaders and return split metadata."""
 
+    if train_transform is None or val_transform is None:
+        raise ValueError("train_transform and val_transform are required")
+
     split = build_split(root=root, val_fraction=val_fraction, seed=seed)
-    default_train_transform, default_val_transform = build_transforms(image_size=image_size)
-    if train_transform is None:
-        train_transform = default_train_transform
-    if val_transform is None:
-        val_transform = default_val_transform
     if pin_memory is None:
         pin_memory = torch.cuda.is_available()
 

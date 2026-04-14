@@ -14,10 +14,9 @@ import torch
 from data.animals10 import IMAGENET_MEAN, IMAGENET_STD
 
 
-"""Shared runtime and training utilities.
-
-This module stays under utils because it is used by both training code and
-notebook orchestration code.
+"""
+set_seed, get_device, and mixed precision
+average meter
 """
 
 
@@ -40,6 +39,43 @@ class AverageMeter:
     def update(self, value: float, n: int = 1) -> None:
         self.total += value * n
         self.count += n
+
+
+class EarlyStopping:
+    """Track validation metric and stop when no meaningful improvement appears."""
+
+    def __init__(self, patience: int = 5, min_delta: float = 0.0, mode: str = "min") -> None:
+        if patience < 1:
+            raise ValueError("patience must be >= 1")
+        if mode not in {"min", "max"}:
+            raise ValueError("mode must be 'min' or 'max'")
+
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.best_score: float | None = None
+        self.bad_epochs = 0
+
+    def step(self, current_score: float) -> bool:
+        """Return True when training should stop early."""
+
+        if self.best_score is None:
+            self.best_score = current_score
+            self.bad_epochs = 0
+            return False
+
+        if self.mode == "min":
+            improved = current_score < (self.best_score - self.min_delta)
+        else:
+            improved = current_score > (self.best_score + self.min_delta)
+
+        if improved:
+            self.best_score = current_score
+            self.bad_epochs = 0
+            return False
+
+        self.bad_epochs += 1
+        return self.bad_epochs >= self.patience
 
 
 def set_seed(seed: int = 42) -> None:
@@ -83,7 +119,7 @@ def save_checkpoint(path: str | Path, **payload: Any) -> None:
     """Persist a raw PyTorch checkpoint payload to disk."""
 
     checkpoint_path = Path(path)
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True) 
     torch.save(payload, checkpoint_path)
 
 
