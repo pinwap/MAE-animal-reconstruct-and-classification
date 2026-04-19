@@ -1,42 +1,49 @@
 from __future__ import annotations
 
 import argparse
-import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import torch
-from torch import nn
+import torch.nn as nn
+import torch.nn.functional as F
 from PIL import Image
-import numpy as np
+from torchvision import transforms as T
+from transformers import ViTMAEConfig, ViTMAEForPreTraining, ViTConfig, ViTModel
 
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
-DEFAULT_MAE_MODEL_NAME = "facebook/vit-mae-base"
+IMAGENET_STD  = (0.229, 0.224, 0.225)
+IMG_SIZE      = 224
+PATCH_SIZE    = 16
+NUM_PATCHES_SIDE = IMG_SIZE // PATCH_SIZE   # 14
+NUM_PATCHES      = NUM_PATCHES_SIDE ** 2   # 196
 
-IDX_TO_CLASS = {
-    0: "dog",
-    1: "horse",
-    2: "elephant",
-    3: "butterfly",
-    4: "chicken",
-    5: "cat",
-    6: "cow",
-    7: "sheep",
-    8: "spider",
-    9: "squirrel",
-}
+ANIMALS10_EN = [
+    "dog", "horse", "elephant", "butterfly", "chicken",
+    "cat", "cow", "sheep", "spider", "squirrel",
+]
+ANIMALS10_IT_SORTED = [
+    "cane", "cavallo", "elefante", "farfalla", "gallina",
+    "gatto", "mucca", "pecora", "ragno", "scoiattolo",
+]
+IDX_TO_CLASS = {i: en for i, en in enumerate(ANIMALS10_EN)}
 
 
+# ---------------------------------------------------------------------------
+# Model architectures
+# ---------------------------------------------------------------------------
 class DoubleConv(nn.Module):
     def __init__(self, in_channels: int, out_channels: int) -> None:
         super().__init__()
         self.block = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
@@ -48,7 +55,7 @@ class DoubleConv(nn.Module):
 class Down(nn.Module):
     def __init__(self, in_channels: int, out_channels: int) -> None:
         super().__init__()
-        self.block = nn.Sequential(nn.MaxPool2d(kernel_size=2), DoubleConv(in_channels, out_channels))
+        self.block = nn.Sequential(nn.MaxPool2d(2), DoubleConv(in_channels, out_channels))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.block(x)
@@ -57,19 +64,15 @@ class Down(nn.Module):
 class Up(nn.Module):
     def __init__(self, in_channels: int, out_channels: int) -> None:
         super().__init__()
-        self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
+        self.up   = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
         self.conv = DoubleConv(in_channels, out_channels)
 
     def forward(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
         x1 = self.up(x1)
-        diff_y = x2.size(2) - x1.size(2)
-        diff_x = x2.size(3) - x1.size(3)
-        x1 = nn.functional.pad(
-            x1,
-            [diff_x // 2, diff_x - diff_x // 2, diff_y // 2, diff_y - diff_y // 2],
-        )
-        x = torch.cat([x2, x1], dim=1)
-        return self.conv(x)
+        dy = x2.size(2) - x1.size(2)
+        dx = x2.size(3) - x1.size(3)
+        x1 = F.pad(x1, [dx // 2, dx - dx // 2, dy // 2, dy - dy // 2])
+        return self.conv(torch.cat([x2, x1], dim=1))
 
 
 class OutConv(nn.Module):
@@ -82,18 +85,21 @@ class OutConv(nn.Module):
 
 
 class UNet(nn.Module):
-    def __init__(self, in_channels: int = 3, out_channels: int = 3, base_channels: int = 64) -> None:
+    """U-Net (base=64, in/out=3) matching weight/unet_best.pt."""
+
+    def __init__(self) -> None:
         super().__init__()
-        self.inc = DoubleConv(in_channels, base_channels)
-        self.down1 = Down(base_channels, base_channels * 2)
-        self.down2 = Down(base_channels * 2, base_channels * 4)
-        self.down3 = Down(base_channels * 4, base_channels * 8)
-        self.down4 = Down(base_channels * 8, base_channels * 16)
-        self.up1 = Up(base_channels * 16 + base_channels * 8, base_channels * 8)
-        self.up2 = Up(base_channels * 8 + base_channels * 4, base_channels * 4)
-        self.up3 = Up(base_channels * 4 + base_channels * 2, base_channels * 2)
-        self.up4 = Up(base_channels * 2 + base_channels, base_channels)
-        self.outc = OutConv(base_channels, out_channels)
+        b = 64
+        self.inc   = DoubleConv(3, b)
+        self.down1 = Down(b,      b * 2)
+        self.down2 = Down(b * 2,  b * 4)
+        self.down3 = Down(b * 4,  b * 8)
+        self.down4 = Down(b * 8,  b * 16)
+        self.up1   = Up(b * 16 + b * 8, b * 8)
+        self.up2   = Up(b * 8  + b * 4, b * 4)
+        self.up3   = Up(b * 4  + b * 2, b * 2)
+        self.up4   = Up(b * 2  + b,     b)
+        self.outc  = OutConv(b, 3)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x1 = self.inc(x)
@@ -101,252 +107,324 @@ class UNet(nn.Module):
         x3 = self.down2(x2)
         x4 = self.down3(x3)
         x5 = self.down4(x4)
-        x = self.up1(x5, x4)
-        x = self.up2(x, x3)
-        x = self.up3(x, x2)
-        x = self.up4(x, x1)
+        x  = self.up1(x5, x4)
+        x  = self.up2(x,  x3)
+        x  = self.up3(x,  x2)
+        x  = self.up4(x,  x1)
         return self.outc(x)
 
 
-class MAEWithClassifier(nn.Module):
-    def __init__(self, num_classes: int = 10, dropout: float = 0.0, model_name: str = DEFAULT_MAE_MODEL_NAME) -> None:
-        super().__init__()
-        from transformers import ViTMAEModel
+class MAEClassifier(nn.Module):
+    """ViT-Base encoder + MLP head matching weight/mae_cls_best.pth."""
 
-        self.encoder = ViTMAEModel.from_pretrained(model_name)
+    def __init__(self, num_classes: int = 10) -> None:
+        super().__init__()
+        cfg = ViTConfig(
+            hidden_size=768,
+            num_hidden_layers=12,
+            num_attention_heads=12,
+            intermediate_size=3072,
+            image_size=IMG_SIZE,
+            patch_size=PATCH_SIZE,
+            num_channels=3,
+        )
+        self.encoder = ViTModel(cfg, add_pooling_layer=False)
         self.classifier = nn.Sequential(
             nn.LayerNorm(768),
             nn.Linear(768, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
+            nn.GELU(),
+            nn.Dropout(0.1),
             nn.Linear(512, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
+            nn.GELU(),
+            nn.Dropout(0.1),
             nn.Linear(256, num_classes),
         )
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        outputs = self.encoder(pixel_values=pixel_values)
-        cls_token = outputs.last_hidden_state[:, 0]
+        cls_token = self.encoder(pixel_values=pixel_values).last_hidden_state[:, 0]
         return self.classifier(cls_token)
 
 
-def _extract_state_dict(checkpoint_or_state: Any) -> dict[str, torch.Tensor]:
-    if isinstance(checkpoint_or_state, dict) and "model_state_dict" in checkpoint_or_state:
-        model_state_dict = checkpoint_or_state["model_state_dict"]
-        if isinstance(model_state_dict, dict):
-            return model_state_dict
-    if isinstance(checkpoint_or_state, dict):
-        return checkpoint_or_state
-    raise TypeError("Checkpoint must be a state_dict or checkpoint dict")
+# ---------------------------------------------------------------------------
+# Weight loaders
+# ---------------------------------------------------------------------------
+def load_mae(weight_path: Path, device: torch.device) -> ViTMAEForPreTraining:
+    cfg = ViTMAEConfig.from_pretrained("facebook/vit-mae-base")
+    cfg.mask_ratio = 0.0
+    model = ViTMAEForPreTraining(cfg)
+    ckpt  = torch.load(weight_path, map_location="cpu", weights_only=False)
+    model.load_state_dict(ckpt.get("model_state_dict", ckpt), strict=False)
+    model.config.mask_ratio = 0.0
+    return model.to(device).eval()
 
 
-def _maybe_strip_prefix(state_dict: dict[str, torch.Tensor], prefix: str) -> dict[str, torch.Tensor]:
-    if all(key.startswith(prefix) for key in state_dict.keys()):
-        return {key[len(prefix):]: value for key, value in state_dict.items()}
-    return state_dict
-
-
-def _load_mae_reconstruction_model(
-    mae_checkpoint_path: str | Path,
-    device: torch.device,
-    model_name: str,
-    mask_ratio: float,
-) -> nn.Module:
-    from transformers import ViTMAEForPreTraining
-
-    model = ViTMAEForPreTraining.from_pretrained(model_name)
-    model.config.mask_ratio = mask_ratio
-
-    checkpoint_raw = torch.load(mae_checkpoint_path, map_location=device)
-    state_dict = _extract_state_dict(checkpoint_raw)
-    state_dict = _maybe_strip_prefix(state_dict, "module.")
-
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if missing or unexpected:
-        print(f"[MAE] missing keys: {len(missing)}, unexpected keys: {len(unexpected)}")
-
-    model.to(device).eval()
-    return model
-
-
-def _load_unet_model(unet_checkpoint_path: str | Path, device: torch.device) -> UNet:
+def load_unet(weight_path: Path, device: torch.device) -> UNet:
     model = UNet()
-    checkpoint_raw = torch.load(unet_checkpoint_path, map_location=device)
-    state_dict = _extract_state_dict(checkpoint_raw)
-    state_dict = _maybe_strip_prefix(state_dict, "module.")
-
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if missing or unexpected:
-        print(f"[UNet] missing keys: {len(missing)}, unexpected keys: {len(unexpected)}")
-
-    model.to(device).eval()
-    return model
+    state = torch.load(weight_path, map_location="cpu", weights_only=False)
+    model.load_state_dict(state.get("model_state_dict", state), strict=True)
+    return model.to(device).eval()
 
 
-def _load_classifier_model(
-    cls_checkpoint_path: str | Path,
+def load_classifier(weight_path: Path, device: torch.device) -> MAEClassifier:
+    model = MAEClassifier(num_classes=10)
+    state = torch.load(weight_path, map_location="cpu", weights_only=False)
+    model.load_state_dict(state.get("model_state_dict", state), strict=False)
+    return model.to(device).eval()
+
+
+# ---------------------------------------------------------------------------
+# Transforms / helpers
+# ---------------------------------------------------------------------------
+recon_transform = T.Compose([
+    T.Resize(256, interpolation=T.InterpolationMode.BICUBIC),
+    T.CenterCrop(IMG_SIZE),
+    T.ToTensor(),
+    T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+])
+
+
+def denormalize(t: torch.Tensor) -> torch.Tensor:
+    mean = torch.tensor(IMAGENET_MEAN, dtype=t.dtype, device=t.device).view(-1, 1, 1)
+    std  = torch.tensor(IMAGENET_STD,  dtype=t.dtype, device=t.device).view(-1, 1, 1)
+    if t.dim() == 4:
+        mean, std = mean.unsqueeze(0), std.unsqueeze(0)
+    return (t * std + mean).clamp(0.0, 1.0)
+
+
+def tensor_to_pil(t: torch.Tensor) -> Image.Image:
+    arr = denormalize(t.detach().cpu()).squeeze(0).permute(1, 2, 0).numpy()
+    return Image.fromarray((arr * 255.0).round().astype("uint8"))
+
+
+def _build_mask_image(masked_indices: list[int], batch_size: int, device: torch.device) -> torch.Tensor:
+    """Return a [B,1,H,W] float mask; 1.0 at masked patch positions, 0.0 elsewhere."""
+    mask_img = torch.zeros(batch_size, 1, IMG_SIZE, IMG_SIZE, device=device)
+    for idx in masked_indices:
+        r = idx // NUM_PATCHES_SIDE
+        c = idx % NUM_PATCHES_SIDE
+        mask_img[:, :, r * PATCH_SIZE:(r + 1) * PATCH_SIZE,
+                       c * PATCH_SIZE:(c + 1) * PATCH_SIZE] = 1.0
+    return mask_img
+
+
+# ---------------------------------------------------------------------------
+# Core inference functions
+# ---------------------------------------------------------------------------
+@torch.no_grad()
+def mae_reconstruct(
+    model: ViTMAEForPreTraining,
+    x: torch.Tensor,
+    masked_indices: list[int],
+) -> torch.Tensor:
+    """Run MAE with deterministic patch masking and return a composite image.
+
+    Visible patches retain original pixels; masked patches use the decoder
+    prediction.  ``masked_indices`` are flat patch indices (0-based, row-major
+    over the 14×14 grid).
+    """
+    valid = [i for i in masked_indices if 0 <= i < NUM_PATCHES]
+    if not valid:
+        return x  # nothing to reconstruct
+
+    model.config.mask_ratio = len(valid) / NUM_PATCHES
+
+    # Build noise: masked patches get 1.0 (sorted last → removed), others 0.0.
+    noise = torch.zeros(x.shape[0], NUM_PATCHES, device=x.device)
+    for idx in valid:
+        noise[0, idx] = 1.0
+
+    logits = model(pixel_values=x, noise=noise).logits   # [B, N, patch_dim]
+    pred   = model.unpatchify(logits)                    # [B, 3, H, W]
+
+    mask_img = _build_mask_image(valid, x.shape[0], x.device)
+    return x * (1.0 - mask_img) + pred * mask_img
+
+
+@torch.no_grad()
+def unet_inpaint(
+    model: UNet,
+    x: torch.Tensor,
+    masked_indices: list[int],
+) -> torch.Tensor:
+    """Zero-out the masked patches in normalized space and run UNet inpainting."""
+    valid = [i for i in masked_indices if 0 <= i < NUM_PATCHES]
+    x_masked = x.clone()
+    for idx in valid:
+        r = idx // NUM_PATCHES_SIDE
+        c = idx % NUM_PATCHES_SIDE
+        x_masked[:, :, r * PATCH_SIZE:(r + 1) * PATCH_SIZE,
+                       c * PATCH_SIZE:(c + 1) * PATCH_SIZE] = 0.0
+    return model(x_masked)
+
+
+def masked_mse(
+    original: torch.Tensor,
+    recon: torch.Tensor,
+    masked_indices: list[int],
+) -> float:
+    """MSE over masked patches only, computed in denormalized [0, 1] space."""
+    valid = [i for i in masked_indices if 0 <= i < NUM_PATCHES]
+    if not valid:
+        return 0.0
+    orig_dn  = denormalize(original)
+    recon_dn = denormalize(recon)
+    mask_img = _build_mask_image(valid, original.shape[0], original.device)
+    diff_sq  = (recon_dn - orig_dn) ** 2
+    return round(float(((diff_sq * mask_img).sum() / mask_img.sum()).item()), 6)
+
+
+@torch.no_grad()
+def classify_topk(
+    classifier: MAEClassifier,
+    pixel_values: torch.Tensor,
+    k: int = 3,
+) -> list[tuple[str, float]]:
+    probs = F.softmax(classifier(pixel_values), dim=-1).squeeze(0)
+    top_probs, top_idx = probs.topk(k)
+    return [(IDX_TO_CLASS[int(i)], round(float(p), 4)) for p, i in zip(top_probs, top_idx)]
+
+
+# ---------------------------------------------------------------------------
+# High-level runner
+# ---------------------------------------------------------------------------
+@dataclass
+class InferenceResult:
+    image_path:      Path
+    mae_output_path: Path
+    unet_output_path: Path
+    mae_mse:         float
+    unet_mse:        float
+    top_predictions: list[tuple[str, float]]
+
+
+def run_inference(
+    image_path: Path,
+    masked_indices: list[int],
+    weight_dir: Path,
+    output_dir: Path,
     device: torch.device,
-    model_name: str,
-    num_classes: int,
-    dropout: float,
-) -> MAEWithClassifier:
-    model = MAEWithClassifier(num_classes=num_classes, dropout=dropout, model_name=model_name)
+    topk: int = 3,
+) -> InferenceResult:
+    """
+    Load models, run MAE + UNet reconstruction on ``image_path`` with
+    ``masked_indices``, compute per-model MSE, classify via MAE output,
+    and save results under ``output_dir``.
 
-    checkpoint_raw = torch.load(cls_checkpoint_path, map_location=device)
-    state_dict = _extract_state_dict(checkpoint_raw)
-    state_dict = _maybe_strip_prefix(state_dict, "module.")
+    Parameters
+    ----------
+    image_path:     Path to the source image (any format PIL can read).
+    masked_indices: Flat patch indices to mask (0-based, row-major, 14×14 grid).
+    weight_dir:     Directory containing the three .pt / .pth weight files.
+    output_dir:     Directory where output images are written (created if needed).
+    device:         Torch device.
+    topk:           Number of top predictions to return.
+    """
+    mae        = load_mae(weight_dir / "mae_reconstruction.pt", device)
+    unet       = load_unet(weight_dir / "unet_best.pt", device)
+    classifier = load_classifier(weight_dir / "mae_cls_best.pth", device)
 
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if missing or unexpected:
-        print(f"[Classifier] missing keys: {len(missing)}, unexpected keys: {len(unexpected)}")
+    image = Image.open(image_path).convert("RGB")
+    x     = recon_transform(image).unsqueeze(0).to(device)
 
-    model.to(device).eval()
-    return model
+    mae_recon  = mae_reconstruct(mae, x, masked_indices)
+    unet_recon = unet_inpaint(unet, x, masked_indices)
+
+    mae_mse_val  = masked_mse(x, mae_recon,  masked_indices)
+    unet_mse_val = masked_mse(x, unet_recon, masked_indices)
+
+    predictions = classify_topk(classifier, mae_recon, k=topk)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = image_path.stem
+    masked_out_path = output_dir / f"{stem}_masked_input.png"
+    mae_out_path    = output_dir / f"{stem}_mae_recon.png"
+    unet_out_path   = output_dir / f"{stem}_unet_recon.png"
+
+    # Save masked input: zero out the masked patches on the denormalized image
+    masked_input = x.clone()
+    for idx in [i for i in masked_indices if 0 <= i < NUM_PATCHES]:
+        r = idx // NUM_PATCHES_SIDE
+        c = idx % NUM_PATCHES_SIDE
+        masked_input[:, :, r * PATCH_SIZE:(r + 1) * PATCH_SIZE,
+                           c * PATCH_SIZE:(c + 1) * PATCH_SIZE] = 0.0
+    tensor_to_pil(masked_input).save(masked_out_path)
+    tensor_to_pil(mae_recon).save(mae_out_path)
+    tensor_to_pil(unet_recon).save(unet_out_path)
+
+    return InferenceResult(
+        image_path       = image_path,
+        mae_output_path  = mae_out_path,
+        unet_output_path = unet_out_path,
+        mae_mse          = mae_mse_val,
+        unet_mse         = unet_mse_val,
+        top_predictions  = predictions,
+    )
 
 
-def _normalize_to_pil(tensor_bchw_or_chw: torch.Tensor) -> Image.Image:
-    if tensor_bchw_or_chw.dim() == 4:
-        tensor = tensor_bchw_or_chw[0]
-    elif tensor_bchw_or_chw.dim() == 3:
-        tensor = tensor_bchw_or_chw
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+def _parse_mask(value: str) -> list[int]:
+    """Accept comma-separated patch indices, e.g. '0,1,15,196'."""
+    if not value.strip():
+        return []
+    return [int(v) for v in value.split(",") if v.strip()]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="MAE + U-Net inpainting and classification (standalone CLI).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples
+--------
+  # Mask patches 10,11,12 and reconstruct:
+  python inference.py --image cat.jpg --mask 10,11,12
+
+  # Use all defaults (no masking → MSE = 0, identity reconstruction):
+  python inference.py --image dog.png
+""",
+    )
+    parser.add_argument("--image",      required=True,  type=Path, help="Path to input image.")
+    parser.add_argument("--mask",       default="",     type=str,
+                        help="Comma-separated flat patch indices to mask (0-based, 14×14 grid).")
+    parser.add_argument("--weight-dir", default=Path("weight"), type=Path)
+    parser.add_argument("--output-dir", default=Path("inference_outputs"), type=Path)
+    parser.add_argument("--topk",       default=3,      type=int)
+    parser.add_argument("--device",     default="auto", type=str,
+                        help="'auto', 'cpu', 'cuda', or 'mps'.")
+    args = parser.parse_args()
+
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
-        raise ValueError("Expected CHW or BCHW tensor")
+        device = torch.device(args.device)
 
-    mean = torch.tensor(IMAGENET_MEAN, dtype=tensor.dtype, device=tensor.device).view(3, 1, 1)
-    std = torch.tensor(IMAGENET_STD, dtype=tensor.dtype, device=tensor.device).view(3, 1, 1)
-    denormalized = (tensor * std + mean).clamp(0.0, 1.0)
-    image_np = (denormalized.detach().cpu().permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
-    return Image.fromarray(image_np)
+    masked_indices = _parse_mask(args.mask)
 
+    print(f"Device         : {device}")
+    print(f"Image          : {args.image}")
+    print(f"Masked patches : {len(masked_indices)} / {NUM_PATCHES}")
 
-class AnimalPipelineInference:
-    def __init__(
-        self,
-        mae_recon_path: str | Path,
-        cls_path: str | Path,
-        unet_recon_path: str | Path | None = None,
-        model_name: str = DEFAULT_MAE_MODEL_NAME,
-        mask_ratio: float = 0.0,
-        num_classes: int = 10,
-        classifier_dropout: float = 0.0,
-        device: torch.device | None = None,
-    ) -> None:
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.mask_ratio = mask_ratio
-        from transformers import ViTImageProcessor
+    result = run_inference(
+        image_path      = args.image,
+        masked_indices  = masked_indices,
+        weight_dir      = args.weight_dir,
+        output_dir      = args.output_dir,
+        device          = device,
+        topk            = args.topk,
+    )
 
-        self.processor = ViTImageProcessor.from_pretrained(model_name)
+    print(f"\nMasked input    → {args.output_dir}/{result.image_path.stem}_masked_input.png")
+    print(f"MAE  recon      → {result.mae_output_path}  (MSE: {result.mae_mse:.6f})")
+    print(f"UNet recon      → {result.unet_output_path}  (MSE: {result.unet_mse:.6f})")
+    better = "MAE" if result.mae_mse <= result.unet_mse else "UNet"
+    print(f"Better model (lower MSE): {better}")
 
-        print(f"Loading inference models on {self.device}...")
-        self.mae_recon = _load_mae_reconstruction_model(
-            mae_checkpoint_path=mae_recon_path,
-            device=self.device,
-            model_name=model_name,
-            mask_ratio=mask_ratio,
-        )
-        self.classifier = _load_classifier_model(
-            cls_checkpoint_path=cls_path,
-            device=self.device,
-            model_name=model_name,
-            num_classes=num_classes,
-            dropout=classifier_dropout,
-        )
-
-        self.unet_recon: UNet | None = None
-        if unet_recon_path is not None and Path(unet_recon_path).exists():
-            self.unet_recon = _load_unet_model(unet_checkpoint_path=unet_recon_path, device=self.device)
-        elif unet_recon_path is not None:
-            print(f"UNet checkpoint not found at {unet_recon_path}. UNet stage will be skipped.")
-
-    def _prepare_input(self, image_path: str | Path) -> tuple[Image.Image, torch.Tensor]:
-        image = Image.open(image_path).convert("RGB")
-        pixel_values = self.processor(images=image, return_tensors="pt")["pixel_values"].to(self.device)
-        return image, pixel_values
-
-    @torch.no_grad()
-    def process(self, image_path: str | Path, output_dir: str | Path = "static") -> dict[str, Any]:
-        _, input_tensor = self._prepare_input(image_path)
-
-        self.mae_recon.config.mask_ratio = self.mask_ratio
-        mae_outputs = self.mae_recon(pixel_values=input_tensor)
-        mae_recon = mae_outputs.logits
-        if hasattr(self.mae_recon, "unpatchify"):
-            try:
-                mae_recon = self.mae_recon.unpatchify(mae_recon)
-            except Exception:
-                pass
-
-        unet_recon: torch.Tensor | None = None
-        if self.unet_recon is not None:
-            unet_recon = self.unet_recon(input_tensor)
-
-        cls_logits = self.classifier(mae_recon)
-        probabilities = torch.softmax(cls_logits, dim=1).squeeze(0)
-        top3_prob, top3_idx = torch.topk(probabilities, 3)
-
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-
-        mae_image_path = output_path / "mae_result.jpg"
-        mae_image = _normalize_to_pil(mae_recon)
-        mae_image.save(mae_image_path)
-
-        unet_image_path: Path | None = None
-        if unet_recon is not None:
-            unet_image_path = output_path / "unet_result.jpg"
-            _normalize_to_pil(unet_recon).save(unet_image_path)
-
-        top_predictions = []
-        for rank in range(3):
-            index = int(top3_idx[rank].item())
-            probability = float(top3_prob[rank].item() * 100.0)
-            top_predictions.append(
-                {
-                    "rank": rank + 1,
-                    "class_index": index,
-                    "class_name": IDX_TO_CLASS.get(index, f"class_{index}"),
-                    "probability": round(probability, 4),
-                }
-            )
-
-        result: dict[str, Any] = {
-            "input_path": str(image_path),
-            "mask_ratio": self.mask_ratio,
-            "reconstruction_paths": {
-                "mae": str(mae_image_path),
-                "unet": str(unet_image_path) if unet_image_path is not None else None,
-            },
-            "classification": {
-                "source_model": "mae_reconstructed",
-                "top_3_predictions": top_predictions,
-            },
-        }
-        return result
+    print(f"\nTop-{args.topk} predictions (from MAE reconstruction):")
+    for rank, (label, prob) in enumerate(result.top_predictions, start=1):
+        print(f"  {rank}. {label:12s}  {prob * 100:6.2f}%")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Single-file inference for MAE reconstruction + classification")
-    parser.add_argument("--image", type=str, required=True, help="Path to input image")
-    parser.add_argument("--mae-ckpt", type=str, default="checkpoint/mae_reconstruct.pt", help="MAE reconstruction checkpoint")
-    parser.add_argument("--cls-ckpt", type=str, default="checkpoint/mae_cls_best.pth", help="Classifier checkpoint")
-    parser.add_argument("--unet-ckpt", type=str, default="checkpoint/unet_final.pt", help="Optional UNet checkpoint")
-    parser.add_argument("--output-dir", type=str, default="static", help="Directory to save output images")
-    parser.add_argument(
-        "--mask-ratio",
-        type=float,
-        default=0.0,
-        help="Additional MAE internal mask ratio; keep 0.0 when input is already masked",
-    )
-    args = parser.parse_args()
-
-    unet_path: str | None = args.unet_ckpt if Path(args.unet_ckpt).exists() else None
-
-    pipeline = AnimalPipelineInference(
-        mae_recon_path=args.mae_ckpt,
-        cls_path=args.cls_ckpt,
-        unet_recon_path=unet_path,
-        mask_ratio=args.mask_ratio,
-    )
-    output = pipeline.process(args.image, output_dir=args.output_dir)
-    print(json.dumps(output, indent=2, ensure_ascii=False))
+    main()
