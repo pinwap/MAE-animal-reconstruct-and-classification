@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const GRID_SIZE = 14;
 const TOTAL_CELLS = GRID_SIZE * GRID_SIZE;
-const MAX_MASKED = Math.floor(TOTAL_CELLS * 0.75); // 147
+const DEFAULT_MASK_LIMIT_PCT = 75;
+const MIN_MASK_LIMIT_PCT = 60;
+const MAX_MASK_LIMIT_PCT = 100;
 
 type Prediction = {
   label: string;
@@ -51,10 +53,16 @@ function App() {
   const [view, setView] = useState<ResultView>("mae");
 
   const [focusTile, setFocusTile] = useState<string | null>(null);
+  const [maskLimitPct, setMaskLimitPct] = useState<number>(DEFAULT_MASK_LIMIT_PCT);
 
   // painting state
   const paintingRef = useRef(false);
   const paintModeRef = useRef<"add" | "remove">("add");
+
+  const maxMasked = useMemo(
+    () => Math.max(1, Math.floor((TOTAL_CELLS * maskLimitPct) / 100)),
+    [maskLimitPct],
+  );
 
   // ---------------- health check ----------------
   useEffect(() => {
@@ -120,12 +128,25 @@ function App() {
     setResult(null);
   };
 
+  // Keep selection valid if the user lowers the mask limit.
+  useEffect(() => {
+    setMasked((prev) => {
+      if (prev.size <= maxMasked) return prev;
+      const next = new Set<number>();
+      for (const idx of prev) {
+        if (next.size >= maxMasked) break;
+        next.add(idx);
+      }
+      return next;
+    });
+  }, [maxMasked]);
+
   // ---------------- paint ----------------
   const setMaskedCell = useCallback((idx: number, on: boolean) => {
     setMasked((prev) => {
       if (on) {
         if (prev.has(idx)) return prev;
-        if (prev.size >= MAX_MASKED) return prev;
+        if (prev.size >= maxMasked) return prev;
         const next = new Set(prev);
         next.add(idx);
         return next;
@@ -136,7 +157,7 @@ function App() {
         return next;
       }
     });
-  }, []);
+  }, [maxMasked]);
 
   const onCellPointerDown =
     (idx: number, isMasked: boolean) => (e: React.PointerEvent) => {
@@ -175,11 +196,11 @@ function App() {
     setMasked((prev) => {
       const inv = new Set<number>();
       for (let i = 0; i < TOTAL_CELLS; i++) {
-        if (!prev.has(i) && inv.size < MAX_MASKED) inv.add(i);
+        if (!prev.has(i) && inv.size < maxMasked) inv.add(i);
       }
       return inv;
     });
-  }, []);
+  }, [maxMasked]);
 
   // ---------------- reconstruct ----------------
   const runReconstruct = useCallback(async () => {
@@ -233,7 +254,7 @@ function App() {
   // ---------------- derived ----------------
   const n = masked.size;
   const pctTotal = (n / TOTAL_CELLS) * 100;
-  const pctMax = n / MAX_MASKED;
+  const pctMax = n / maxMasked;
   const numClass = pctMax >= 1 ? "over" : pctMax >= 0.9 ? "warn" : "";
   const fillClass = pctMax >= 0.9 && pctMax < 1 ? "warn" : "";
   const meterWidth = Math.min(pctMax * 100, 100);
@@ -301,7 +322,7 @@ function App() {
           <h1>Mask &amp; reconstruct</h1>
           <div className="subtitle">
             Upload an image, mask any cells in the <b>14 × 14</b> grid (up to{" "}
-            <b>75%</b>), then reconstruct. Compare original, masked input, and
+            <b>{maskLimitPct}%</b>), then reconstruct. Compare original, masked input, and
             the model's prediction side-by-side.
           </div>
         </div>
@@ -316,7 +337,7 @@ function App() {
           </div>
           <div className="qm">
             <div className="l">max masked</div>
-            <div className="v">147 (75%)</div>
+            <div className="v">{maxMasked} ({maskLimitPct}%)</div>
           </div>
           <div className="qm">
             <div className="l">latency</div>
@@ -451,19 +472,32 @@ function App() {
               <div>
                 <div className={`counter-num ${numClass}`}>
                   <span>{n}</span>
-                  <span className="of"> / {MAX_MASKED}</span>
+                  <span className="of"> / {maxMasked}</span>
                 </div>
               </div>
               <div className="counter-pct">
-                <b>{pctTotal.toFixed(0)}%</b> &nbsp;·&nbsp; limit 75%
+                <b>{pctTotal.toFixed(0)}%</b> &nbsp;·&nbsp; limit {maskLimitPct}%
               </div>
+            </div>
+            <div className="limit-control">
+              <label htmlFor="mask-limit">Mask limit</label>
+              <input
+                id="mask-limit"
+                type="range"
+                min={MIN_MASK_LIMIT_PCT}
+                max={MAX_MASK_LIMIT_PCT}
+                step={1}
+                value={maskLimitPct}
+                onChange={(e) => setMaskLimitPct(Number(e.target.value))}
+              />
+              <span className="mono">{maskLimitPct}%</span>
             </div>
             <div className="meter">
               <div
                 className={`fill ${fillClass}`}
                 style={{ width: `${meterWidth}%` }}
               />
-              <div className="limit-mark" title="75% limit" />
+              <div className="limit-mark" title={`${maskLimitPct}% limit`} />
             </div>
             <div className="actions">
               <button
@@ -640,7 +674,7 @@ function App() {
       {/* ---------- Footer ---------- */}
       <footer className="footer">
         <div>
-          14 × 14 patch grid · 16 px patches · max 75% masked (147 cells)
+          14 × 14 patch grid · 16 px patches · max {maskLimitPct}% masked ({maxMasked} cells)
         </div>
         <div className="kbds">
           <span className="k">
