@@ -1,1 +1,4 @@
 *.zip
+*.rar
+/weight
+/inference_output
