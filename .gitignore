@@ -1,4 +1,7 @@
 *.zip
 *.rar
 /weight
+
+# visualization
 /inference_output
+analysis_mae_vs_unet_code_level.py
