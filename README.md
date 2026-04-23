@@ -1,102 +1,107 @@
-# MAE-animal-reconstruct-and-classification
+# MAE Animal Reconstruction and Classification
 
-Kaggle-first, notebook-only pipeline for Animals-10:
-- MAE reconstruction pretraining
-- U-Net reconstruction baseline
-- MAE-encoder classification fine-tuning
+โปรเจคนี้เป็นงานสร้างภาพคืน (image reconstruction/inpainting) และจำแนกชนิดสัตว์ โดยใช้ชุดข้อมูล Animals-10
 
-Execution entrypoint:
-- start_implementation.ipynb
+แกนหลักคือเปรียบเทียบ 2 แนวทาง reconstruction:
+1. MAE (ViT-MAE)
+2. U-Net (baseline)
 
-## File Responsibilities
+จากนั้นใช้ผลของ MAE ไปทำ classification fine-tune และนำระบบไปต่อเป็นเว็บเดโม
 
-| File | Role | Edit Frequency |
-|---|---|---|
-| start_implementation.ipynb | Main orchestrator on Kaggle, config, step-by-step training/eval flow | High |
-| data/animals10.py | Data discovery, split, transforms, dataloaders | Low |
-| models/unet.py | U-Net architecture definition | Low |
-| training/mae_trainer.py | MAE load/process/reconstruct + MAE train/eval loop | Low |
-| training/unet.py | Patch masking + U-Net train/eval loop | Low |
-| training/classification.py | MAE->classifier weight transfer + classifier train/eval | Low |
-| training/evaluation.py | MAE vs U-Net comparison metrics + classifier metric wrapper | Low |
-| utils/common.py | Shared seed/device/mixed-precision/checkpoint/json + visualization helpers | Low |
+## เป้าหมายงาน
 
-## Call Graph
+1. ฝึก MAE ให้เติมภาพส่วนที่ถูกปิดเป็น patch ได้
+2. ฝึก U-Net ภายใต้เงื่อนไข masking เดียวกันเพื่อเป็น baseline
+3. นำ encoder จาก MAE มาใช้ต่อกับ classifier head เพื่อจำแนกสัตว์ 10 คลาส
+4. เปรียบเทียบ MAE กับ U-Net ด้วย masked-MSE และตัวอย่างภาพ
+5. เปิดใช้งานผ่านเว็บ (อัปโหลดรูป -> เลือก patch ที่ปิด -> ดูผล MAE/UNet + top-k prediction)
 
-```mermaid
-flowchart TD
-    N[start_implementation.ipynb] --> D[data/animals10.py]
-    N --> M[training/mae_trainer.py]
-    N --> U[training/unet.py]
-    N --> C[training/classification.py]
-    N --> E[training/evaluation.py]
-    N --> G[utils/common.py]
+## MAE ใช้ Pretrained อย่างไร
 
-    U --> UM[models/unet.py]
-    E --> U
-    E --> M
-    E --> C
-    E --> G
+1. งาน reconstruction ใช้สถาปัตยกรรม ViT-MAE-Base แล้วโหลด weight ที่ฝึกไว้จาก `weight/mae_reconstruction.pt`
+2. งาน classification ใช้ MAE encoder ต่อกับ MLP head และโหลด/finetune จาก `weight/mae_cls_best.pth`
+3. เมื่อ inference จะ reconstruct ก่อน แล้วนำผล MAE reconstruction ไปเข้า classifier
 
-    M --> G
-    U --> G
-    C --> G
+สรุป: โปรเจคนี้ใช้แนวคิด transfer learning จาก MAE ทั้งใน reconstruction และ classification finetune
+
+## เปรียบเทียบกับ U-Net
+
+1. MAE: ใช้กลไก mask token/patch ภายใน ViT แล้ว decoder ทำนาย patch ที่หายไป
+2. U-Net: รับภาพที่ patch ที่ปิดถูกทำเป็นสีดำ แล้วเรียนรู้การเติมจากบริบทรอบข้าง
+3. การประเมินหลักใช้ masked-MSE (วัดเฉพาะพื้นที่ที่ถูกปิด)
+4. ค่าที่ต่ำกว่าถือว่าดีกว่าในงานสร้างภาพคืน
+
+## โครงสร้างโปรเจค
+
+```text
+MAE-animal-reconstruct-and-classification/
+├─ start_implementation.ipynb         # จุดรันหลักฝั่ง Kaggle
+├─ inference.py                       # CLI inference (reconstruction + classification)
+├─ INFERENCE.md                       # คู่มือ inference แบบละเอียด
+├─ data/
+│  └─ animals10.py                    # โหลดข้อมูล/split/transforms
+├─ models/
+│  └─ unet.py                         # โครงสร้าง U-Net
+├─ training/
+│  ├─ mae_trainer.py                  # train/eval MAE
+│  ├─ unet.py                         # train/eval U-Net
+│  ├─ classification.py               # finetune classifier จาก MAE encoder
+│  └─ evaluation.py                   # ประเมินและเปรียบเทียบผล
+├─ utils/
+│  └─ common.py                       # utility กลาง (seed, checkpoint, metrics)
+├─ weight/                            # น้ำหนักโมเดลที่ใช้งาน
+│  ├─ mae_reconstruction.pt
+│  ├─ unet_best.pt
+│  └─ mae_cls_best.pth
+└─ web_demo/
+   ├─ apps/web/                       # Next.js frontend
+   └─ services/inference/             # FastAPI inference service
 ```
 
-## Kaggle Packaging
+## วิธีรัน (สรุปสั้นพร้อมใช้งาน)
 
-Zip only code files (do not include .venv/.git/cache/output):
+### 1) รัน Inference แบบ CLI
 
-```powershell
-Compress-Archive -Path start_implementation.ipynb,data,models,training,utils,pyproject.toml,README.md -DestinationPath kaggle_code_bundle.zip -Force
+ติดตั้งด้วย `uv` ตาม `pyproject.toml` และรันได้ทันที:
+
+```bash
+uv run inference.py --image data/dog.jpg --mask 74,75,88,89
 ```
 
-## Kaggle Run Steps
+ผลลัพธ์จะถูกบันทึกใน `inference_outputs/` เช่น:
+1. `<stem>_masked_input.png`
+2. `<stem>_mae_recon.png`
+3. `<stem>_unet_recon.png`
 
-1. Create a new Kaggle Notebook.
-2. Add dataset `alessiocorrado99/animals10` so images are at:
-    `/kaggle/input/datasets/alessiocorrado99/animals10/raw-img`
-3. Add your code zip as a Kaggle Dataset.
-4. In notebook Section 0, set:
-    - `USE_ZIPPED_PROJECT_CODE = True` (if you uploaded a zip dataset)
-    - `CODE_ZIP_PATH` to your actual zip path
-5. Install dependencies if needed:
-```python
-!pip install -q torch torchvision transformers matplotlib
+### 2) รันฝั่ง Notebook/Kaggle
+
+1. เปิด `start_implementation.ipynb`
+2. ตั้ง dataset Animals-10 ให้ path ตรงตามที่ระบุในโน้ตบุ๊ก
+3. รันจากต้นจนจบเพื่อ train/evaluate และบันทึกผล
+
+### 3) รันเว็บเดโม (Frontend + Backend)
+
+ที่โฟลเดอร์ `web_demo/`:
+
+```bash
+make install
 ```
-6. Run notebook from Section 0 to the end.
 
-## Classifier Training Mode Switch
+เปิด 2 terminal:
 
-You can choose how classification fine-tuning works from Cell 1 in notebook:
+```bash
+# Terminal 1
+make dev-inference   # FastAPI: http://localhost:8000
 
-- `CLS_TRAIN_MODE = "end_to_end"`:
-    train all classifier parameters.
-- `CLS_TRAIN_MODE = "partial"`:
-    freeze almost everything and train only:
-    - classifier head
-    - last `UNFREEZE_LAST_BLOCKS` ViT blocks
-    - optional final ViT layer norm (`UNFREEZE_VIT_LAYERNORM`)
+# Terminal 2
+make dev-web         # Next.js: http://localhost:3000
+```
 
-This mode is applied in notebook Cell 6 and optimizer in Cell 7 automatically
-uses only trainable parameters.
+จากนั้นเปิด `http://localhost:3000`
 
-## Outputs On Kaggle
+## น้ำหนักโมเดลที่ต้องมี
 
-- Checkpoints: /kaggle/working/checkpoints/...
-- Metrics JSON: /kaggle/working/results/...
-- Comparison image: /kaggle/working/results/comparison/sample_comparison.png
-
-## About Editing .py Files
-
-Default workflow:
-- Usually you do not need to edit .py files every run.
-- You call functions/classes from notebook cells.
-- Tune hyperparameters and experiment flow in start_implementation.ipynb.
-
-When should you edit .py files:
-- New model architecture
-- New augmentation or split policy
-- New metric, checkpoint format, or visualization behavior
-
-In short: yes, you can call these .py modules from ipynb directly as reusable functions/classes.
+วางไฟล์ใน `weight/` (หรือใน `web_demo/services/inference/weights/` สำหรับเว็บเดโม):
+1. `mae_reconstruction.pt`
+2. `unet_best.pt`
+3. `mae_cls_best.pth`

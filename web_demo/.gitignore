@@ -1,0 +1,25 @@
+.DS_Store
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.uv-cache/
+
+# node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# env
+.env
+.env.local
+
+# weights (too big for git; fetched out-of-band)
+services/inference/weights/*.pt
+services/inference/weights/*.pth
+
+# outputs
+services/inference/inference_outputs/
